@@ -1,5 +1,6 @@
 import os
 os.environ["DISABLE_SQLALCHEMY_CEXT"] = "1"
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -50,7 +51,7 @@ LOGIN_MAX_FAILS = 10
 LOGIN_WINDOW_SECONDS = 15 * 60
 # Modell über Umgebungsvariable steuerbar, damit ein Modellwechsel keine Code-Änderung braucht
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.7-flash")
 
 if not ALLOWED_ORIGINS:
     logger.warning("ALLOWED_ORIGINS ist leer: Browser-Zugriffe vom Frontend werden blockiert.")
@@ -342,16 +343,22 @@ def issue_session(db: Session, user: UserDB) -> dict:
     return {"token": token, "email": user.email}
 
 
-def consume_ai_quota(db: Session, user: UserDB) -> None:
+# Tageslimit: erst prüfen, gezählt wird nach einer erfolgreichen Antwort von Gemini.
+def check_ai_quota(user: UserDB) -> None:
     today = utc_now().date()
-    if user.ai_calls_date != today:
-        user.ai_calls_date = today
-        user.ai_calls_today = 0
-    if user.ai_calls_today >= AI_DAILY_LIMIT:
+    used = user.ai_calls_today if user.ai_calls_date == today else 0
+    if used >= AI_DAILY_LIMIT:
         raise HTTPException(
             status_code=429,
             detail=f"Tageslimit für Fotoanalysen ({AI_DAILY_LIMIT}) erreicht. Morgen geht es weiter.",
         )
+
+
+def count_ai_call(db: Session, user: UserDB) -> None:
+    today = utc_now().date()
+    if user.ai_calls_date != today:
+        user.ai_calls_date = today
+        user.ai_calls_today = 0
     user.ai_calls_today += 1
     db.commit()
 
@@ -697,6 +704,41 @@ def delete_food(
 
 
 # --- KI-Fotoanalyse -----------------------------------------------------------
+# Bei Überlastung (429, 500, 503) wird je Modell einmal wiederholt, danach das Ersatzmodell probiert.
+RETRYABLE_STATUS = {429, 500, 503}
+
+
+def gemini_url(model: str) -> str:
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+async def request_gemini(body: dict, api_key: str):
+    # Gibt (antwort, letzter_status) zurück. Die Antwort ist None, wenn alle Versuche scheitern.
+    models = [GEMINI_MODEL]
+    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL != GEMINI_MODEL:
+        models.append(GEMINI_FALLBACK_MODEL)
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    last_status = None
+
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        for model in models:
+            for attempt in range(2):
+                try:
+                    res = await client.post(gemini_url(model), json=body, headers=headers)
+                except httpx.HTTPError:
+                    logger.exception("Gemini (%s) nicht erreichbar", model)
+                    break  # zum nächsten Modell
+                if res.status_code == 200:
+                    return res, 200
+                last_status = res.status_code
+                logger.error("Gemini (%s) HTTP %s: %s", model, res.status_code, res.text[:300])
+                if res.status_code not in RETRYABLE_STATUS:
+                    break  # z. B. Modell nicht verfügbar: Wiederholen bringt nichts
+                if attempt == 0:
+                    await asyncio.sleep(2)
+    return None, last_status
+
+
 @app.post("/api/ai/analyze-meal")
 async def analyze_meal(
     req: PhotoAnalyzeRequest,
@@ -707,7 +749,7 @@ async def analyze_meal(
     if not api_key:
         raise HTTPException(status_code=500, detail="KI-Analyse ist auf dem Server nicht konfiguriert")
 
-    consume_ai_quota(db, user)
+    check_ai_quota(user)
 
     prompt = (
         "Du bist ein präziser Ernährungswissenschaftler. Analysiere dieses Essensfoto (oder die Nährwerttabelle). "
@@ -732,21 +774,16 @@ async def analyze_meal(
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Key im Header statt in der URL, damit er nicht in Logs oder Fehlermeldungen landet
-            res = await client.post(
-                GEMINI_URL,
-                json=body,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+    res, last_status = await request_gemini(body, api_key)
+    if res is None:
+        if last_status in RETRYABLE_STATUS:
+            raise HTTPException(
+                status_code=503,
+                detail="Der KI-Dienst ist gerade stark ausgelastet. Bitte in einigen Minuten erneut versuchen.",
             )
-    except httpx.HTTPError:
-        logger.exception("Gemini ist nicht erreichbar")
-        raise HTTPException(status_code=502, detail="KI-Dienst nicht erreichbar, bitte später erneut versuchen")
-
-    if res.status_code != 200:
-        logger.error("Gemini antwortete mit HTTP %s: %s", res.status_code, res.text[:300])
         raise HTTPException(status_code=502, detail="KI-Analyse fehlgeschlagen")
+
+    count_ai_call(db, user)  # erst jetzt zählen: fehlgeschlagene Versuche kosten kein Tageslimit
 
     try:
         raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
