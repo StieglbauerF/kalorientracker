@@ -5,8 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#0f172a" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Kalorienrechner" />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>Kalorienrechner</title>
+
+  <!-- App-Icon & Favicon (Dreiteiliger Makro-Ring mit Ziel-Kern) -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Crect width='128' height='128' rx='28' fill='%230f172a'/%3E%3Ccircle cx='64' cy='64' r='44' fill='none' stroke='%231e293b' stroke-width='13'/%3E%3Cg transform='rotate(-90 64 64)'%3E%3Ccircle cx='64' cy='64' r='44' fill='none' stroke='%233b82f6' stroke-width='13' stroke-linecap='round' stroke-dasharray='76 276.46' stroke-dashoffset='0'/%3E%3Ccircle cx='64' cy='64' r='44' fill='none' stroke='%23f59e0b' stroke-width='13' stroke-linecap='round' stroke-dasharray='76 276.46' stroke-dashoffset='-92.15'/%3E%3Ccircle cx='64' cy='64' r='44' fill='none' stroke='%23f43f5e' stroke-width='13' stroke-linecap='round' stroke-dasharray='76 276.46' stroke-dashoffset='-184.31'/%3E%3C/g%3E%3Ccircle cx='64' cy='64' r='13' fill='%2310b981'/%3E%3C/svg%3E" />
+  <link id="appleTouchIcon" rel="apple-touch-icon" sizes="180x180" href="" />
+
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
@@ -45,9 +52,22 @@
   <!-- Header -->
   <header class="sticky top-0 z-30 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md">
     <div class="max-w-6xl mx-auto px-4 py-3.5 flex flex-wrap items-center justify-between gap-3">
-      <div onclick="goHome()" title="Zur heutigen Übersicht" class="flex items-center gap-2.5 cursor-pointer group select-none">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-900/40 group-hover:scale-105 transition-transform">
-          <i data-lucide="flame" class="w-6 h-6 text-white"></i>
+      <div onclick="goHome()" title="Zur heutigen Übersicht" class="flex items-center gap-3 cursor-pointer group select-none">
+        <div class="w-10 h-10 rounded-xl bg-slate-800/90 border border-slate-700/80 flex items-center justify-center shadow-lg shadow-slate-950/50 group-hover:scale-105 group-hover:border-slate-600 transition-all">
+          <!-- Dreiteiliger Makro-Ring SVG Logo -->
+          <svg class="w-7 h-7" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="32" cy="32" r="22" stroke="#1e293b" stroke-width="6.5" />
+            <g transform="rotate(-90 32 32)">
+              <!-- Protein (Blau) -->
+              <circle cx="32" cy="32" r="22" stroke="#3b82f6" stroke-width="6.5" stroke-linecap="round" stroke-dasharray="38 138.23" stroke-dashoffset="0" />
+              <!-- Carbs (Amber) -->
+              <circle cx="32" cy="32" r="22" stroke="#f59e0b" stroke-width="6.5" stroke-linecap="round" stroke-dasharray="38 138.23" stroke-dashoffset="-46.08" />
+              <!-- Fett (Rose) -->
+              <circle cx="32" cy="32" r="22" stroke="#f43f5e" stroke-width="6.5" stroke-linecap="round" stroke-dasharray="38 138.23" stroke-dashoffset="-92.15" />
+            </g>
+            <!-- Ziel-Kern (Emerald) -->
+            <circle cx="32" cy="32" r="6.5" fill="#10b981" />
+          </svg>
         </div>
         <div>
           <h1 class="text-lg font-bold tracking-tight text-white group-hover:text-emerald-400 transition-colors">
@@ -627,6 +647,61 @@
   <script>
     const API_URL = "https://kalorientracker-api.onrender.com";
 
+    // Hochauflösendes PNG-App-Icon für Handy-Startbildschirm generieren (iOS & Android)
+    function generateMobileAppIcon() {
+      try {
+        const size = 512;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+
+        // Dunkler Hintergrund
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(0, 0, size, size);
+
+        const cx = size / 2;
+        const cy = size / 2;
+        const radius = 165;
+        const lineWidth = 48;
+
+        // Dezenter Hintergrund-Ring
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = '#1e293b';
+        ctx.lineWidth = lineWidth;
+        ctx.stroke();
+
+        // Drei Makro-Segmente (Blau, Amber, Rose) mit abgerundeten Enden
+        const segments = [
+          { color: '#3b82f6', start: -Math.PI / 2 + 0.16, end: -Math.PI / 2 + (Math.PI * 2) / 3 - 0.16 },
+          { color: '#f59e0b', start: -Math.PI / 2 + (Math.PI * 2) / 3 + 0.16, end: -Math.PI / 2 + (Math.PI * 4) / 3 - 0.16 },
+          { color: '#f43f5e', start: -Math.PI / 2 + (Math.PI * 4) / 3 + 0.16, end: -Math.PI / 2 + Math.PI * 2 - 0.16 }
+        ];
+
+        ctx.lineCap = 'round';
+        ctx.lineWidth = lineWidth;
+        segments.forEach(seg => {
+          ctx.beginPath();
+          ctx.arc(cx, cy, radius, seg.start, seg.end);
+          ctx.strokeStyle = seg.color;
+          ctx.stroke();
+        });
+
+        // Smaragdgrüner Ziel-Kern in der Mitte
+        ctx.beginPath();
+        ctx.arc(cx, cy, 48, 0, Math.PI * 2);
+        ctx.fillStyle = '#10b981';
+        ctx.fill();
+
+        const dataUrl = canvas.toDataURL('image/png');
+        const appleIcon = document.getElementById('appleTouchIcon');
+        if (appleIcon) appleIcon.href = dataUrl;
+      } catch (e) {
+        console.warn('App-Icon Generierung übersprungen:', e);
+      }
+    }
+
     const MEAL_CATEGORIES = [
       { key: 'breakfast', title: 'Frühstück', icon: 'sunrise' },
       { key: 'lunch', title: 'Mittagessen', icon: 'sun' },
@@ -749,6 +824,7 @@
 
     // --- Initialisierung & Daten laden ---
     async function initApp() {
+      generateMobileAppIcon();
       updateDateHeaderLabel();
       renderMealsGrid();
       updateDashboardStats();
