@@ -1,38 +1,105 @@
 import os
 os.environ["DISABLE_SQLALCHEMY_CEXT"] = "1"
+import base64
+import hashlib
+import hmac
 import json
-from datetime import date
+import logging
+import secrets
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, func
-from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy import (
+    Column, Date, DateTime, Float, ForeignKey, Index, Integer, String,
+    create_engine, func,
+)
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+logger = logging.getLogger("kalorientracker")
+
+# ==============================================================================
+# 0. KONFIGURATION (Umgebungsvariablen auf Render)
+# ==============================================================================
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./kalorientracker.db")
+# psycopg (Version 3) ist in requirements.txt. SQLAlchemy braucht dafür den Treiber-Zusatz,
+# sonst sucht es psycopg2, das auf dem Server nicht installiert ist.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
+# Komma-getrennte Liste der erlaubten Frontend-Adressen, z. B. "https://kalorien.example.com"
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
+# Registrierung funktioniert nur mit diesem Einladungscode. Leer = Registrierung aus.
+INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
+
+# Maximale KI-Fotoanalysen pro Nutzer und Tag (Kostenschutz)
+AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "20"))
+
+SESSION_TTL_DAYS = 30
+LOGIN_MAX_FAILS = 10
+LOGIN_WINDOW_SECONDS = 15 * 60
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+
+if not ALLOWED_ORIGINS:
+    logger.warning("ALLOWED_ORIGINS ist leer: Browser-Zugriffe vom Frontend werden blockiert.")
+if not INVITE_CODE:
+    logger.info("INVITE_CODE ist leer: Registrierung ist deaktiviert.")
+
 
 # ==============================================================================
 # 1. DATENBANK-KONFIGURATION (Lokal SQLite, auf Render/Neon PostgreSQL)
 # ==============================================================================
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./kalorientracker.db")
-
-# Falls ein Hoster "postgres://" statt "postgresql://" liefert, für SQLAlchemy korrigieren
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 
+def utc_now() -> datetime:
+    """Naive UTC-Zeit. Damit verhalten sich SQLite und Postgres gleich."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # ==============================================================================
 # 2. DATENBANK-TABELLEN (SQLAlchemy Modelle)
 # ==============================================================================
+class UserDB(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    ai_calls_date = Column(Date, nullable=True)
+    ai_calls_today = Column(Integer, default=0, nullable=False)
+
+
+class SessionDB(Base):
+    """Sitzungstokens. Gespeichert wird nur der SHA-256-Hash, nie das Token selbst."""
+    __tablename__ = "sessions"
+
+    token_hash = Column(String, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+
 class UserSettingsDB(Base):
     __tablename__ = "user_settings"
+    __table_args__ = (Index("ix_user_settings_user_id", "user_id", unique=True),)
 
-    id = Column(Integer, primary_key=True, default=1)
+    id = Column(Integer, primary_key=True)
+    # nullable nur für Altdaten vor der Migration; Abfragen filtern immer nach user_id
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     goal_mode = Column(String, default="auto")
     gender = Column(String, default="male")
     weight = Column(Float, default=80.0)
@@ -52,6 +119,7 @@ class FoodDB(Base):
     __tablename__ = "foods"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     name = Column(String, nullable=False)
     kcal = Column(Float, nullable=False)      # pro 100g
     p = Column(Float, nullable=False)         # pro 100g
@@ -65,6 +133,7 @@ class MealEntryDB(Base):
     __tablename__ = "meal_entries"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     entry_date = Column(Date, index=True, nullable=False)
     meal_type = Column(String, nullable=False)  # breakfast, lunch, dinner, snacks
     name = Column(String, nullable=False)
@@ -76,13 +145,33 @@ class MealEntryDB(Base):
     s = Column(Float, default=0.0)              # Salz pro 100g
 
 
-# Tabellen automatisch erzeugen, falls sie noch nicht existieren
+# Fehlende Tabellen anlegen. Bestehende Spalten werden NICHT verändert: dafür scripts/migrate.py nutzen.
 Base.metadata.create_all(bind=engine)
 
 
 # ==============================================================================
 # 3. VALIDIERUNGSSCHEMATA (Pydantic)
 # ==============================================================================
+EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+ImageMime = Literal["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
+
+
+class RegisterSchema(BaseModel):
+    email: str = Field(min_length=3, max_length=254, pattern=EMAIL_PATTERN)
+    password: str = Field(min_length=10, max_length=128)
+    invite_code: str = Field(min_length=1, max_length=200)
+
+
+class LoginSchema(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    token: str
+    email: str
+
+
 class SettingsSchema(BaseModel):
     goal_mode: Literal["auto", "manual"] = "auto"
     gender: Literal["male", "female"] = "male"
@@ -92,56 +181,190 @@ class SettingsSchema(BaseModel):
     activity: float = Field(gt=1.0, le=2.5)
     objective: int
     protein_factor: float = Field(gt=0.5, le=4.0)
-    target_kcal: int = Field(ge=500)
-    target_p: int = Field(ge=10)
-    target_c: int = Field(ge=0)
-    target_f: int = Field(ge=10)
-    target_s: float = Field(ge=0)
+    target_kcal: int = Field(ge=500, le=10000)
+    target_p: int = Field(ge=10, le=1000)
+    target_c: int = Field(ge=0, le=1500)
+    target_f: int = Field(ge=10, le=600)
+    target_s: float = Field(ge=0, le=100)
 
 
 class FoodCreate(BaseModel):
-    name: str = Field(min_length=1)
-    kcal: float = Field(ge=0)
-    p: float = Field(ge=0)
-    c: float = Field(ge=0)
-    f: float = Field(ge=0)
-    s: float = Field(default=0.0, ge=0)
-    default_g: float = Field(default=100.0, gt=0)
+    name: str = Field(min_length=1, max_length=200)
+    kcal: float = Field(ge=0, le=900)      # pro 100g, Fett hat maximal 900 kcal/100g
+    p: float = Field(ge=0, le=100)
+    c: float = Field(ge=0, le=100)
+    f: float = Field(ge=0, le=100)
+    s: float = Field(default=0.0, ge=0, le=100)
+    default_g: float = Field(default=100.0, gt=0, le=5000)
 
 
 class EntryCreate(BaseModel):
     entry_date: date = Field(default_factory=date.today)
     meal_type: Literal["breakfast", "lunch", "dinner", "snacks"]
-    name: str = Field(min_length=1)
-    grams: float = Field(gt=0)
-    kcal: float = Field(ge=0)
-    p: float = Field(ge=0)
-    c: float = Field(ge=0)
-    f: float = Field(ge=0)
-    s: float = Field(default=0.0, ge=0)
+    name: str = Field(min_length=1, max_length=200)
+    grams: float = Field(gt=0, le=5000)
+    kcal: float = Field(ge=0, le=900)
+    p: float = Field(ge=0, le=100)
+    c: float = Field(ge=0, le=100)
+    f: float = Field(ge=0, le=100)
+    s: float = Field(default=0.0, ge=0, le=100)
 
 
 class EntryUpdateGrams(BaseModel):
-    grams: float = Field(gt=0)
+    grams: float = Field(gt=0, le=5000)
 
 
 class PhotoAnalyzeRequest(BaseModel):
-    image_base64: str
-    mime_type: str = "image/jpeg"
-    hint: Optional[str] = None
+    image_base64: str = Field(min_length=100, max_length=7_000_000)  # ca. 5 MB Bilddaten
+    mime_type: ImageMime = "image/jpeg"
+    hint: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator("image_base64")
+    @classmethod
+    def must_be_base64(cls, value: str) -> str:
+        try:
+            base64.b64decode(value, validate=True)
+        except (ValueError, TypeError):
+            raise ValueError("image_base64 ist kein gültiges Base64")
+        return value
+
+
+class MealAnalysis(BaseModel):
+    """Form der Gemini-Antwort. Alles, was nicht passt, wird abgelehnt."""
+    name: str = Field(max_length=200)
+    portionGrams: float = Field(gt=0, le=5000)
+    kcal100: float = Field(ge=0, le=900)
+    p100: float = Field(ge=0, le=100)
+    c100: float = Field(ge=0, le=100)
+    f100: float = Field(ge=0, le=100)
+    s100: float = Field(ge=0, le=100)
+    note: str = Field(default="", max_length=1000)
+
+
+MEAL_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "name": {"type": "STRING"},
+        "portionGrams": {"type": "NUMBER"},
+        "kcal100": {"type": "NUMBER"},
+        "p100": {"type": "NUMBER"},
+        "c100": {"type": "NUMBER"},
+        "f100": {"type": "NUMBER"},
+        "s100": {"type": "NUMBER"},
+        "note": {"type": "STRING"},
+    },
+    "required": ["name", "portionGrams", "kcal100", "p100", "c100", "f100", "s100", "note"],
+}
 
 
 # ==============================================================================
-# 4. FASTAPI APP & SICHERHEIT
+# 4. PASSWÖRTER, SITZUNGEN, LOGIN-SCHUTZ
 # ==============================================================================
-app = FastAPI(title="Kalorienrechner API", version="1.0.0")
+SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        password.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, dklen=32
+    )
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        _, n, r, p, salt_hex, digest_hex = stored.split("$")
+        digest = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=bytes.fromhex(salt_hex),
+            n=int(n), r=int(r), p=int(p),
+            dklen=len(digest_hex) // 2,
+        )
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+# Wird geprüft, wenn die E-Mail unbekannt ist, damit die Antwortzeit nicht verrät, ob ein Konto existiert
+DUMMY_HASH = hash_password("kein-konto-vorhanden")
+
+
+def new_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def extract_bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return authorization[len("Bearer "):].strip() or None
+
+
+# Einfacher In-Memory-Limiter pro E-Mail. Greift nur innerhalb eines Prozesses,
+# bei mehreren Workern bräuchte man Redis o. Ä.
+_failed_logins: dict[str, deque] = defaultdict(deque)
+_login_lock = threading.Lock()
+
+
+def check_login_allowed(email: str) -> None:
+    now = time.monotonic()
+    with _login_lock:
+        attempts = _failed_logins[email]
+        while attempts and now - attempts[0] > LOGIN_WINDOW_SECONDS:
+            attempts.popleft()
+        if len(attempts) >= LOGIN_MAX_FAILS:
+            raise HTTPException(status_code=429, detail="Zu viele Fehlversuche. Bitte warte 15 Minuten.")
+
+
+def record_failed_login(email: str) -> None:
+    with _login_lock:
+        _failed_logins[email].append(time.monotonic())
+
+
+def clear_failed_logins(email: str) -> None:
+    with _login_lock:
+        _failed_logins.pop(email, None)
+
+
+def issue_session(db: Session, user: UserDB) -> dict:
+    token = new_token()
+    db.add(SessionDB(
+        token_hash=hash_token(token),
+        user_id=user.id,
+        expires_at=utc_now() + timedelta(days=SESSION_TTL_DAYS),
+    ))
+    db.commit()
+    return {"token": token, "email": user.email}
+
+
+def consume_ai_quota(db: Session, user: UserDB) -> None:
+    today = utc_now().date()
+    if user.ai_calls_date != today:
+        user.ai_calls_date = today
+        user.ai_calls_today = 0
+    if user.ai_calls_today >= AI_DAILY_LIMIT:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Tageslimit für Fotoanalysen ({AI_DAILY_LIMIT}) erreicht. Morgen geht es weiter.",
+        )
+    user.ai_calls_today += 1
+    db.commit()
+
+
+# ==============================================================================
+# 5. FASTAPI APP, DEPENDENCIES
+# ==============================================================================
+app = FastAPI(title="Kalorienrechner API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Kann nach Frontend-Deployment auf deine Domain eingeschränkt werden
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,  # Auth läuft über den Authorization-Header, keine Cookies
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 
@@ -153,25 +376,49 @@ def get_db():
         db.close()
 
 
-def verify_secret(x_app_secret: Optional[str] = Header(default=None)):
-    """Prüft das Passwort im Header X-App-Secret, sofern APP_SECRET gesetzt ist."""
-    expected_secret = os.getenv("APP_SECRET")
-    if expected_secret and x_app_secret != expected_secret:
-        raise HTTPException(status_code=401, detail="Ungültiges oder fehlendes App-Passwort")
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> UserDB:
+    token = extract_bearer(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+    session = (
+        db.query(SessionDB)
+        .filter(SessionDB.token_hash == hash_token(token), SessionDB.expires_at > utc_now())
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=401, detail="Sitzung abgelaufen oder ungültig")
+    user = db.get(UserDB, session.user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Nicht angemeldet")
+    return user
 
 
-def get_or_create_settings(db: Session) -> UserSettingsDB:
-    settings = db.query(UserSettingsDB).filter(UserSettingsDB.id == 1).first()
-    if not settings:
-        settings = UserSettingsDB(id=1)
+def get_or_create_settings(db: Session, user: UserDB) -> UserSettingsDB:
+    """
+    Legt die Einstellungen beim ersten Zugriff an. Das Frontend lädt Einstellungen und Tage
+    parallel, deshalb können zwei Anfragen gleichzeitig versuchen, den Datensatz anzulegen.
+    Die Unique-Constraint auf user_id verhindert den Doppelten. Die zweite Anfrage
+    liest dann den bereits vorhandenen Datensatz.
+    """
+    settings = db.query(UserSettingsDB).filter(UserSettingsDB.user_id == user.id).first()
+    if settings:
+        return settings
+    try:
+        settings = UserSettingsDB(user_id=user.id)
         db.add(settings)
         db.commit()
-        db.refresh(settings)
+    except IntegrityError:
+        db.rollback()
+        return db.query(UserSettingsDB).filter(UserSettingsDB.user_id == user.id).first()
+    db.refresh(settings)
     return settings
 
 
 # ==============================================================================
-# 5. API-ENDPUNKTE
+# 6. API-ENDPUNKTE
 # ==============================================================================
 @app.get("/api/health")
 def health_check():
@@ -179,14 +426,74 @@ def health_check():
     return {"status": "ok"}
 
 
-@app.get("/api/settings", dependencies=[Depends(verify_secret)])
-def read_settings(db: Session = Depends(get_db)):
-    return get_or_create_settings(db)
+# --- Konten & Anmeldung -------------------------------------------------------
+@app.post("/api/auth/register", response_model=TokenResponse)
+def register(payload: RegisterSchema, db: Session = Depends(get_db)):
+    if not INVITE_CODE:
+        raise HTTPException(status_code=403, detail="Registrierung ist deaktiviert")
+    if not hmac.compare_digest(payload.invite_code.encode("utf-8"), INVITE_CODE.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Einladungscode ungültig")
+
+    email = payload.email.strip().lower()
+    if db.query(UserDB).filter(UserDB.email == email).first():
+        raise HTTPException(status_code=409, detail="Diese E-Mail ist bereits registriert")
+
+    user = UserDB(email=email, password_hash=hash_password(payload.password))
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Diese E-Mail ist bereits registriert")
+    db.refresh(user)
+    get_or_create_settings(db, user)  # Einstellungen gleich anlegen, damit das erste Laden keinen Wettlauf auslöst
+    return issue_session(db, user)
 
 
-@app.put("/api/settings", dependencies=[Depends(verify_secret)])
-def update_settings(payload: SettingsSchema, db: Session = Depends(get_db)):
-    settings = get_or_create_settings(db)
+@app.post("/api/auth/login", response_model=TokenResponse)
+def login(payload: LoginSchema, db: Session = Depends(get_db)):
+    email = payload.email.strip().lower()
+    check_login_allowed(email)
+
+    user = db.query(UserDB).filter(UserDB.email == email).first()
+    password_ok = verify_password(payload.password, user.password_hash if user else DUMMY_HASH)
+    if not user or not password_ok:
+        record_failed_login(email)
+        raise HTTPException(status_code=401, detail="E-Mail oder Passwort falsch")
+
+    clear_failed_logins(email)
+    db.query(SessionDB).filter(SessionDB.expires_at <= utc_now()).delete(synchronize_session=False)
+    db.commit()
+    return issue_session(db, user)
+
+
+@app.post("/api/auth/logout")
+def logout(authorization: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
+    token = extract_bearer(authorization)
+    if token:
+        db.query(SessionDB).filter(SessionDB.token_hash == hash_token(token)).delete(synchronize_session=False)
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: UserDB = Depends(get_current_user)):
+    return {"email": user.email}
+
+
+# --- Einstellungen ------------------------------------------------------------
+@app.get("/api/settings")
+def read_settings(user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    return get_or_create_settings(db, user)
+
+
+@app.put("/api/settings")
+def update_settings(
+    payload: SettingsSchema,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    settings = get_or_create_settings(db, user)
     for key, value in payload.model_dump().items():
         setattr(settings, key, value)
     db.commit()
@@ -194,15 +501,20 @@ def update_settings(payload: SettingsSchema, db: Session = Depends(get_db)):
     return settings
 
 
-@app.get("/api/days/{target_date}", dependencies=[Depends(verify_secret)])
-def get_day(target_date: date, db: Session = Depends(get_db)):
+# --- Tage, Einträge, Historie -------------------------------------------------
+@app.get("/api/days/{target_date}")
+def get_day(
+    target_date: date,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     entries = (
         db.query(MealEntryDB)
-        .filter(MealEntryDB.entry_date == target_date)
+        .filter(MealEntryDB.user_id == user.id, MealEntryDB.entry_date == target_date)
         .order_by(MealEntryDB.id.asc())
         .all()
     )
-    settings = get_or_create_settings(db)
+    settings = get_or_create_settings(db, user)
 
     grouped_meals = {"breakfast": [], "lunch": [], "dinner": [], "snacks": []}
     totals = {"kcal": 0.0, "p": 0.0, "c": 0.0, "f": 0.0, "s": 0.0}
@@ -237,18 +549,31 @@ def get_day(target_date: date, db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/entries", dependencies=[Depends(verify_secret)])
-def add_entry(payload: EntryCreate, db: Session = Depends(get_db)):
-    entry = MealEntryDB(**payload.model_dump())
+@app.post("/api/entries")
+def add_entry(
+    payload: EntryCreate,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    entry = MealEntryDB(**payload.model_dump(), user_id=user.id)
     db.add(entry)
     db.commit()
     db.refresh(entry)
     return entry
 
 
-@app.patch("/api/entries/{entry_id}", dependencies=[Depends(verify_secret)])
-def update_entry_grams(entry_id: int, payload: EntryUpdateGrams, db: Session = Depends(get_db)):
-    entry = db.query(MealEntryDB).filter(MealEntryDB.id == entry_id).first()
+@app.patch("/api/entries/{entry_id}")
+def update_entry_grams(
+    entry_id: int,
+    payload: EntryUpdateGrams,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    entry = (
+        db.query(MealEntryDB)
+        .filter(MealEntryDB.id == entry_id, MealEntryDB.user_id == user.id)
+        .first()
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Eintrag nicht gefunden")
     entry.grams = payload.grams
@@ -257,9 +582,17 @@ def update_entry_grams(entry_id: int, payload: EntryUpdateGrams, db: Session = D
     return entry
 
 
-@app.delete("/api/entries/{entry_id}", dependencies=[Depends(verify_secret)])
-def delete_entry(entry_id: int, db: Session = Depends(get_db)):
-    entry = db.query(MealEntryDB).filter(MealEntryDB.id == entry_id).first()
+@app.delete("/api/entries/{entry_id}")
+def delete_entry(
+    entry_id: int,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    entry = (
+        db.query(MealEntryDB)
+        .filter(MealEntryDB.id == entry_id, MealEntryDB.user_id == user.id)
+        .first()
+    )
     if not entry:
         raise HTTPException(status_code=404, detail="Eintrag nicht gefunden")
     db.delete(entry)
@@ -267,9 +600,14 @@ def delete_entry(entry_id: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
-@app.get("/api/history", dependencies=[Depends(verify_secret)])
-def get_history(limit: int = 60, db: Session = Depends(get_db)):
+@app.get("/api/history")
+def get_history(
+    limit: int = 60,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Aggregiert automatisch alle getrackten Tage aus meal_entries."""
+    limit = max(1, min(limit, 365))
     rows = (
         db.query(
             MealEntryDB.entry_date,
@@ -280,6 +618,7 @@ def get_history(limit: int = 60, db: Session = Depends(get_db)):
             func.sum(MealEntryDB.f * MealEntryDB.grams / 100.0).label("f"),
             func.sum(MealEntryDB.s * MealEntryDB.grams / 100.0).label("s"),
         )
+        .filter(MealEntryDB.user_id == user.id)
         .group_by(MealEntryDB.entry_date)
         .order_by(MealEntryDB.entry_date.desc())
         .limit(limit)
@@ -300,23 +639,38 @@ def get_history(limit: int = 60, db: Session = Depends(get_db)):
     ]
 
 
-@app.get("/api/foods", dependencies=[Depends(verify_secret)])
-def list_foods(db: Session = Depends(get_db)):
-    return db.query(FoodDB).order_by(FoodDB.name.asc()).all()
+# --- Lebensmittel-Datenbank ---------------------------------------------------
+@app.get("/api/foods")
+def list_foods(user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    return (
+        db.query(FoodDB)
+        .filter(FoodDB.user_id == user.id)
+        .order_by(FoodDB.name.asc())
+        .all()
+    )
 
 
-@app.post("/api/foods", dependencies=[Depends(verify_secret)])
-def create_food(payload: FoodCreate, db: Session = Depends(get_db)):
-    food = FoodDB(**payload.model_dump())
+@app.post("/api/foods")
+def create_food(
+    payload: FoodCreate,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    food = FoodDB(**payload.model_dump(), user_id=user.id)
     db.add(food)
     db.commit()
     db.refresh(food)
     return food
 
 
-@app.put("/api/foods/{food_id}", dependencies=[Depends(verify_secret)])
-def update_food(food_id: int, payload: FoodCreate, db: Session = Depends(get_db)):
-    food = db.query(FoodDB).filter(FoodDB.id == food_id).first()
+@app.put("/api/foods/{food_id}")
+def update_food(
+    food_id: int,
+    payload: FoodCreate,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    food = db.query(FoodDB).filter(FoodDB.id == food_id, FoodDB.user_id == user.id).first()
     if not food:
         raise HTTPException(status_code=404, detail="Lebensmittel nicht gefunden")
     for key, value in payload.model_dump().items():
@@ -326,9 +680,13 @@ def update_food(food_id: int, payload: FoodCreate, db: Session = Depends(get_db)
     return food
 
 
-@app.delete("/api/foods/{food_id}", dependencies=[Depends(verify_secret)])
-def delete_food(food_id: int, db: Session = Depends(get_db)):
-    food = db.query(FoodDB).filter(FoodDB.id == food_id).first()
+@app.delete("/api/foods/{food_id}")
+def delete_food(
+    food_id: int,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    food = db.query(FoodDB).filter(FoodDB.id == food_id, FoodDB.user_id == user.id).first()
     if not food:
         raise HTTPException(status_code=404, detail="Lebensmittel nicht gefunden")
     db.delete(food)
@@ -336,23 +694,27 @@ def delete_food(food_id: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
-@app.post("/api/ai/analyze-meal", dependencies=[Depends(verify_secret)])
-async def analyze_meal(req: PhotoAnalyzeRequest):
+# --- KI-Fotoanalyse -----------------------------------------------------------
+@app.post("/api/ai/analyze-meal")
+async def analyze_meal(
+    req: PhotoAnalyzeRequest,
+    user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY auf dem Server nicht konfiguriert")
+        raise HTTPException(status_code=500, detail="KI-Analyse ist auf dem Server nicht konfiguriert")
+
+    consume_ai_quota(db, user)
 
     prompt = (
         "Du bist ein präziser Ernährungswissenschaftler. Analysiere dieses Essensfoto (oder die Nährwerttabelle). "
         f"{f'Zusatzhinweis des Nutzers: {req.hint}. ' if req.hint else ''}"
         "Schätze den Namen des Gerichts auf Deutsch, das gesamte Portionsgewicht in Gramm (portionGrams) "
         "sowie die Nährwerte pro 100g (kcal100, p100, c100, f100, s100 für Salz) und eine kurze Aufschlüsselung "
-        "der geschätzten Komponenten (note). Antworte AUSSCHLIESSLICH im folgenden JSON-Format: "
-        '{"name": "String", "portionGrams": 370, "kcal100": 186, "p100": 10.8, '
-        '"c100": 20.3, "f100": 6.4, "s100": 1.2, "note": "Kurze Erklärung"}'
+        "der geschätzten Komponenten (note). Antworte AUSSCHLIESSLICH im vorgegebenen JSON-Format."
     )
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     body = {
         "contents": [
             {
@@ -362,13 +724,33 @@ async def analyze_meal(req: PhotoAnalyzeRequest):
                 ]
             }
         ],
-        "generationConfig": {"response_mime_type": "application/json"},
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "response_schema": MEAL_RESPONSE_SCHEMA,
+        },
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(url, json=body)
-        if res.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Gemini API Fehler: {res.text}")
-        data = res.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-        return json.loads(raw_text)
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Key im Header statt in der URL, damit er nicht in Logs oder Fehlermeldungen landet
+            res = await client.post(
+                GEMINI_URL,
+                json=body,
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+            )
+    except httpx.HTTPError:
+        logger.exception("Gemini ist nicht erreichbar")
+        raise HTTPException(status_code=502, detail="KI-Dienst nicht erreichbar, bitte später erneut versuchen")
+
+    if res.status_code != 200:
+        logger.error("Gemini antwortete mit HTTP %s: %s", res.status_code, res.text[:300])
+        raise HTTPException(status_code=502, detail="KI-Analyse fehlgeschlagen")
+
+    try:
+        raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        analysis = MealAnalysis.model_validate(json.loads(raw_text))
+    except (KeyError, IndexError, TypeError, ValueError, ValidationError):
+        logger.exception("Gemini-Antwort hat nicht das erwartete Format")
+        raise HTTPException(status_code=502, detail="KI-Antwort konnte nicht gelesen werden")
+
+    return analysis.model_dump()
