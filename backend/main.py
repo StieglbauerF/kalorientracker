@@ -151,8 +151,7 @@ class MealEntryDB(Base):
     s = Column(Float, default=0.0)              # Salz pro 100g
 
 
-# Fehlende Tabellen anlegen. Bestehende Spalten werden NICHT verändert: dafür scripts/migrate.py nutzen.
-Base.metadata.create_all(bind=engine)
+# Das Schema wird ausschließlich über Alembic verwaltet (alembic upgrade head), nicht hier.
 
 
 # ==============================================================================
