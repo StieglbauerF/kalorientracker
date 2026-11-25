@@ -841,8 +841,14 @@
     }
 
     // --- Initialisierung & Daten laden ---
+    // Fotoanalyse derzeit ausgeschaltet: KI-Dienst nicht verfügbar. Auf true setzen, um sie wieder einzublenden.
+    const PHOTO_FEATURE_ENABLED = false;
+
     async function initApp() {
       generateMobileAppIcon();
+      if (!PHOTO_FEATURE_ENABLED) {
+        document.querySelectorAll('[onclick*="openPhotoModal"], [onclick*="\'photo\'"]').forEach(el => { el.style.display = 'none'; });
+      }
       updateDateHeaderLabel();
       renderMealsGrid();
       updateDashboardStats();
