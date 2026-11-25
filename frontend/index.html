@@ -45,15 +45,15 @@
   <!-- Header -->
   <header class="sticky top-0 z-30 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md">
     <div class="max-w-6xl mx-auto px-4 py-3.5 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-2.5">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-900/40">
+      <div onclick="goHome()" title="Zur heutigen Übersicht" class="flex items-center gap-2.5 cursor-pointer group select-none">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-900/40 group-hover:scale-105 transition-transform">
           <i data-lucide="flame" class="w-6 h-6 text-white"></i>
         </div>
         <div>
-          <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-            Kalorienrechner <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Cloud API</span>
+          <h1 class="text-lg font-bold tracking-tight text-white group-hover:text-emerald-400 transition-colors">
+            Kalorienrechner
           </h1>
-          <p class="text-xs text-slate-400">PostgreSQL & FastAPI Makro-Tracker</p>
+          <p class="text-xs text-slate-400">Tägliche Kalorien & Makros im Blick</p>
         </div>
       </div>
 
@@ -72,10 +72,10 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
-        <!-- Server Status & Passwort Trigger -->
+        <!-- Verbindungsstatus & Passwort Trigger -->
         <button onclick="openAuthModal()" id="serverStatusBtn" class="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition">
           <span id="serverDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-          <span id="serverLabel">Verbinde...</span>
+          <span id="serverLabel">Verbindet...</span>
         </button>
 
         <button onclick="openHistoryModal()" class="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-indigo-900/40 transition">
@@ -106,7 +106,7 @@
             <i data-lucide="calculator" class="w-5 h-5 text-emerald-400"></i>
             Kalorien- & Makro-Zielrechner
           </h2>
-          <p class="text-xs text-slate-400 mt-0.5">Wird dauerhaft in deiner Datenbank gespeichert (Mifflin-St. Jeor oder manuell).</p>
+          <p class="text-xs text-slate-400 mt-0.5">Berechne deinen Tagesbedarf automatisch oder lege eigene Ziele fest.</p>
         </div>
         <div class="flex bg-slate-800 p-1 rounded-xl border border-slate-700">
           <button id="btnModeAuto" onclick="setGoalMode('auto')" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition bg-emerald-600 text-white">
@@ -315,9 +315,9 @@
         <div>
           <h3 class="text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
             <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
-            Meine eigenen Schnell-Vorlagen
+            Meine Schnell-Vorlagen
           </h3>
-          <span class="text-[11px] text-slate-500">Aus deiner PostgreSQL-Datenbank</span>
+          <span class="text-[11px] text-slate-500">Mit einem Klick zur Mahlzeit hinzufügen</span>
         </div>
         <select id="quickTemplateMealSelect" class="bg-slate-800 border border-slate-700 text-xs text-white rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-emerald-500">
           <option value="breakfast">🌅 Frühstück</option>
@@ -334,13 +334,13 @@
 
   </main>
 
-  <!-- Modal: App-Passwort / Backend-Verbindung -->
+  <!-- Modal: Zugangspasswort -->
   <div id="authModal" class="fixed inset-0 z-50 hidden bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full overflow-hidden shadow-2xl flex flex-col">
       <div class="p-4 border-b border-slate-800 flex items-center justify-between">
         <h3 class="text-base font-bold text-white flex items-center gap-2">
           <i data-lucide="lock" class="w-5 h-5 text-emerald-400"></i>
-          Backend-Zugang (APP_SECRET)
+          Zugangspasswort
         </h3>
         <button onclick="closeAuthModal()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
           <i data-lucide="x" class="w-5 h-5"></i>
@@ -348,11 +348,11 @@
       </div>
       <div class="p-5 space-y-4">
         <p class="text-xs text-slate-300 leading-relaxed">
-          Gib dein selbst gewähltes Passwort ein (das du bei Render unter <code class="text-emerald-400">APP_SECRET</code> eingetragen hast). Es wird lokal auf diesem Gerät gespeichert.
+          Gib dein persönliches Passwort ein, um deine Einträge und Vorlagen zu laden. Es bleibt auf diesem Gerät gespeichert.
         </p>
         <div>
-          <label class="block text-xs text-slate-400 mb-1">App-Passwort</label>
-          <input type="password" id="appSecretInput" placeholder="Dein APP_SECRET Passwort..." class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          <label class="block text-xs text-slate-400 mb-1">Passwort</label>
+          <input type="password" id="appSecretInput" placeholder="Passwort eingeben..." class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
         <p id="authStatusHint" class="text-xs text-amber-400 hidden"></p>
         <div class="flex gap-2 pt-1">
@@ -400,7 +400,7 @@
         </div>
 
         <div class="space-y-2.5 pt-2">
-          <h4 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Automatisch gespeicherte Tage</h4>
+          <h4 class="text-xs font-semibold uppercase tracking-wider text-slate-400">Gespeicherte Tage</h4>
           <div id="historyListContainer" class="space-y-2"></div>
         </div>
       </div>
@@ -414,7 +414,7 @@
       <div class="p-4 border-b border-slate-800 flex items-center justify-between">
         <div>
           <h3 class="text-base font-bold text-white" id="modalTitle">Lebensmittel hinzufügen</h3>
-          <p class="text-xs text-slate-400" id="modalSubtitle">Datenbank, KI Foto-Scan oder eigener Eintrag</p>
+          <p class="text-xs text-slate-400" id="modalSubtitle">Favoriten, Foto-Scan oder eigener Eintrag</p>
         </div>
         <button onclick="closeFoodModal()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800">
           <i data-lucide="x" class="w-5 h-5"></i>
@@ -434,11 +434,11 @@
       <div class="grid grid-cols-3 border-b border-slate-800 bg-slate-900/60">
         <button id="tabBtnSearch" onclick="switchModalTab('search')" class="py-2.5 text-xs font-semibold border-b-2 border-emerald-500 text-emerald-400 transition flex items-center justify-center gap-1.5">
           <i data-lucide="search" class="w-3.5 h-3.5"></i>
-          <span>Datenbank</span>
+          <span>Meine Liste</span>
         </button>
         <button id="tabBtnPhoto" onclick="switchModalTab('photo')" class="py-2.5 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5">
           <i data-lucide="camera" class="w-3.5 h-3.5 text-violet-400"></i>
-          <span>KI Foto-Scan</span>
+          <span>Foto-Scan</span>
         </button>
         <button id="tabBtnCustom" onclick="switchModalTab('custom')" class="py-2.5 text-xs font-semibold border-b-2 border-transparent text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5">
           <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
@@ -455,15 +455,15 @@
         <div id="foodDatabaseList" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
       </div>
 
-      <!-- Tab: Photo Scan (Server-Side Gemini) -->
+      <!-- Tab: Photo Scan -->
       <div id="tabContentPhoto" class="hidden p-4 flex-1 overflow-y-auto space-y-4">
         <div class="bg-slate-800/70 border border-slate-700/80 rounded-xl p-3 space-y-1">
           <div class="flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-            <span class="text-xs font-semibold text-white">Serverseitige Gemini-Bildanalyse</span>
+            <span class="text-xs font-semibold text-white">Automatische Foto-Erkennung</span>
           </div>
           <p class="text-[11px] text-slate-400 leading-relaxed">
-            Dein Foto wird sicher an dein Render-Backend gesendet und dort mit deinem hinterlegten Gemini API-Key ausgewertet.
+            Mache ein Foto von deinem Essen oder einer Nährwerttabelle – Kalorien und Makros werden automatisch geschätzt.
           </p>
         </div>
 
@@ -566,7 +566,7 @@
 
           <button onclick="confirmAddPhotoFood()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white shadow-lg shadow-emerald-900/40 transition flex items-center justify-center gap-2">
             <i data-lucide="plus" class="w-4 h-4"></i>
-            <span>Automatisch zur Mahlzeit hinzufügen</span>
+            <span>Zur Mahlzeit hinzufügen</span>
           </button>
         </div>
       </div>
@@ -607,7 +607,7 @@
           <div class="flex items-end">
             <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2.5">
               <input type="checkbox" id="customSaveToDb" checked class="rounded bg-slate-800 border-slate-700 text-emerald-500 focus:ring-0" />
-              <span>Dauerhaft in Datenbank speichern</span>
+              <span>Als Schnell-Vorlage speichern</span>
             </label>
           </div>
         </div>
@@ -666,10 +666,10 @@
       const label = document.getElementById('serverLabel');
       if (status === 'connected') {
         dot.className = 'w-2 h-2 rounded-full bg-emerald-400';
-        label.textContent = text || 'Server: Verbunden';
+        label.textContent = text || 'Verbunden';
       } else if (status === 'waking') {
         dot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
-        label.textContent = text || 'Server wacht auf (~45s)...';
+        label.textContent = text || 'Verbindet (~45s)...';
       } else {
         dot.className = 'w-2 h-2 rounded-full bg-rose-500';
         label.textContent = text || 'Passwort / Fehler';
@@ -692,7 +692,7 @@
 
       if (res.status === 401) {
         setServerBadge('error', 'Passwort fehlt');
-        openAuthModal('Ungültiges oder fehlendes Passwort. Bitte APP_SECRET eingeben.');
+        openAuthModal('Ungültiges oder fehlendes Passwort.');
         throw new Error('Unauthorized');
       }
 
@@ -705,7 +705,16 @@
       return res.json();
     }
 
-    // --- Datums-Steuerung ---
+    // --- Navigation & Datums-Steuerung ---
+    function goHome() {
+      closeFoodModal();
+      closeHistoryModal();
+      closeAuthModal();
+      document.getElementById('calculatorPanel').classList.add('hidden');
+      jumpToToday();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
     function updateDateHeaderLabel() {
       document.getElementById('activeDateInput').value = currentDate;
       const today = getLocalTodayStr();
@@ -746,7 +755,7 @@
       lucide.createIcons();
 
       if (!appSecret) {
-        openAuthModal('Bitte gib beim ersten Start dein APP_SECRET-Passwort ein.');
+        openAuthModal('Bitte gib beim ersten Start dein persönliches Passwort ein.');
         return;
       }
 
@@ -754,7 +763,7 @@
     }
 
     async function loadAllInitialData() {
-      setServerBadge('waking', 'Server wacht auf (~45s)...');
+      setServerBadge('waking', 'Verbindet (~45s)...');
       try {
         const [settingsData, foodsData, dayData] = await Promise.all([
           apiFetch('/api/settings'),
@@ -770,7 +779,7 @@
       } catch (e) {
         if (e.message !== 'Unauthorized') {
           console.error('Verbindungsfehler:', e);
-          setServerBadge('error', 'Server nicht erreichbar');
+          setServerBadge('error', 'Offline');
         }
       }
     }
@@ -1167,7 +1176,7 @@
       });
     }
 
-    // --- Mahlzeiten-Einträge (CRUD gegen FastAPI) ---
+    // --- Mahlzeiten-Einträge ---
     async function createMealEntryOnServer(mealKey, foodObj, grams) {
       const created = await apiFetch('/api/entries', {
         method: 'POST',
@@ -1233,13 +1242,13 @@
       }
     }
 
-    // --- Eigene Lebensmittel-Datenbank & Schnell-Vorlagen ---
+    // --- Eigene Vorlagen ---
     function renderQuickTemplates() {
       const container = document.getElementById('quickTemplatesContainer');
       const custom = state.customFoods || [];
 
       if (custom.length === 0) {
-        container.innerHTML = `<p class="text-[11px] text-slate-500 italic w-full">Du hast noch keine eigenen Lebensmittel. Speichere neue unter "+ Hinzufügen" → "Manuell / Eigenes".</p>`;
+        container.innerHTML = `<p class="text-[11px] text-slate-500 italic w-full">Du hast noch keine eigenen Vorlagen. Speichere neue unter "+ Hinzufügen" → "Manuell / Eigenes".</p>`;
         return;
       }
 
@@ -1267,7 +1276,7 @@
     }
 
     async function deleteFoodFromDb(id) {
-      if (!confirm('Möchtest du dieses Lebensmittel wirklich dauerhaft aus deiner Datenbank löschen?')) return;
+      if (!confirm('Möchtest du dieses Lebensmittel wirklich aus deinen Vorlagen löschen?')) return;
       try {
         await apiFetch(`/api/foods/${id}`, { method: 'DELETE' });
         state.customFoods = state.customFoods.filter(f => f.id !== id);
@@ -1277,7 +1286,7 @@
           lucide.createIcons();
         }
       } catch (e) {
-        alert('Fehler beim Löschen aus der Datenbank.');
+        alert('Fehler beim Löschen.');
       }
     }
 
@@ -1399,7 +1408,7 @@
       const foods = (state.customFoods || []).filter(f => f.name.toLowerCase().includes(q));
 
       if (foods.length === 0) {
-        listEl.innerHTML = `<p class="text-xs text-slate-500 text-center py-6">Keine Einträge gefunden. Speichere neue Lebensmittel unter dem Tab "Manuell / Eigenes".</p>`;
+        listEl.innerHTML = `<p class="text-xs text-slate-500 text-center py-6">Keine Einträge gefunden. Lege neue Lebensmittel unter "Manuell / Eigenes" an.</p>`;
         return;
       }
 
@@ -1418,7 +1427,7 @@
             <button onclick="addFoodFromDb(${f.id})" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-semibold text-white transition">
               + ${f.default_g || 100}g
             </button>
-            <button onclick="deleteFoodFromDb(${f.id})" class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-900 hover:text-rose-400 transition" title="Dauerhaft löschen">
+            <button onclick="deleteFoodFromDb(${f.id})" class="p-1.5 rounded-lg text-slate-500 hover:bg-slate-900 hover:text-rose-400 transition" title="Löschen">
               <i data-lucide="trash-2" class="w-4 h-4"></i>
             </button>
           </div>
@@ -1527,7 +1536,7 @@
       }
     }
 
-    // --- Foto-Analyse (über dein FastAPI-Backend) ---
+    // --- Foto-Analyse ---
     function handlePhotoSelected(event) {
       const file = event.target.files[0];
       if (!file) return;
@@ -1558,7 +1567,7 @@
       const hint = document.getElementById('photoContextHint').value.trim();
 
       btn.disabled = true;
-      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Server analysiert Bild mit Gemini...</span>`;
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Bild wird analysiert...</span>`;
       lucide.createIcons();
 
       try {
@@ -1572,7 +1581,7 @@
         });
         fillPhotoResult(parsed);
       } catch (err) {
-        alert('KI-Fotoanalyse fehlgeschlagen. Prüfe, ob GEMINI_API_KEY bei Render hinterlegt ist.');
+        alert('Fotoanalyse fehlgeschlagen. Bitte versuche es erneut.');
       } finally {
         btn.disabled = false;
         btn.innerHTML = `<i data-lucide="sparkles" class="w-4 h-4"></i><span>Foto erneut analysieren</span>`;
