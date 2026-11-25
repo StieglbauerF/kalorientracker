@@ -48,7 +48,9 @@ AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "20"))
 SESSION_TTL_DAYS = 30
 LOGIN_MAX_FAILS = 10
 LOGIN_WINDOW_SECONDS = 15 * 60
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+# Modell über Umgebungsvariable steuerbar, damit ein Modellwechsel keine Code-Änderung braucht
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
 if not ALLOWED_ORIGINS:
     logger.warning("ALLOWED_ORIGINS ist leer: Browser-Zugriffe vom Frontend werden blockiert.")
