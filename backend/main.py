@@ -47,6 +47,7 @@ INVITE_CODE = os.getenv("INVITE_CODE", "").strip()
 AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "20"))
 
 SESSION_TTL_DAYS = 30
+PRIVACY_VERSION = "2026-11-25"  # bei Änderung des Hinweises erhöhen, dann stimmen alle neu zu
 LOGIN_MAX_FAILS = 10
 LOGIN_WINDOW_SECONDS = 15 * 60
 # Modell über Umgebungsvariable steuerbar, damit ein Modellwechsel keine Code-Änderung braucht
@@ -85,6 +86,8 @@ class UserDB(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False)
     ai_calls_date = Column(Date, nullable=True)
     ai_calls_today = Column(Integer, default=0, nullable=False)
+    privacy_accepted_at = Column(DateTime, nullable=True)
+    privacy_version = Column(String, nullable=True)
 
 
 class SessionDB(Base):
@@ -163,10 +166,15 @@ class RegisterSchema(BaseModel):
     email: str = Field(min_length=3, max_length=254, pattern=EMAIL_PATTERN)
     password: str = Field(min_length=10, max_length=128)
     invite_code: str = Field(min_length=1, max_length=200)
+    privacy_accepted: bool = False
 
 
 class LoginSchema(BaseModel):
     email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class DeleteAccountSchema(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
@@ -385,10 +393,11 @@ def get_db():
         db.close()
 
 
-def get_current_user(
+def get_session_user(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ) -> UserDB:
+    # Prüft nur die Anmeldung, nicht die Datenschutz-Zustimmung
     token = extract_bearer(authorization)
     if not token:
         raise HTTPException(status_code=401, detail="Nicht angemeldet")
@@ -402,6 +411,17 @@ def get_current_user(
     user = db.get(UserDB, session.user_id)
     if not user:
         raise HTTPException(status_code=401, detail="Nicht angemeldet")
+    return user
+
+
+def has_privacy_consent(user: UserDB) -> bool:
+    return user.privacy_accepted_at is not None and user.privacy_version == PRIVACY_VERSION
+
+
+def get_current_user(user: UserDB = Depends(get_session_user)) -> UserDB:
+    # Für alle Datenendpunkte: Anmeldung UND aktuelle Datenschutz-Zustimmung nötig
+    if not has_privacy_consent(user):
+        raise HTTPException(status_code=403, detail="Datenschutz-Zustimmung fehlt")
     return user
 
 
@@ -447,7 +467,14 @@ def register(payload: RegisterSchema, db: Session = Depends(get_db)):
     if db.query(UserDB).filter(UserDB.email == email).first():
         raise HTTPException(status_code=409, detail="Diese E-Mail ist bereits registriert")
 
-    user = UserDB(email=email, password_hash=hash_password(payload.password))
+    if not payload.privacy_accepted:
+        raise HTTPException(status_code=400, detail="Bitte stimme dem Datenschutzhinweis zu")
+    user = UserDB(
+        email=email,
+        password_hash=hash_password(payload.password),
+        privacy_accepted_at=utc_now(),
+        privacy_version=PRIVACY_VERSION,
+    )
     db.add(user)
     try:
         db.commit()
@@ -486,8 +513,70 @@ def logout(authorization: Optional[str] = Header(default=None), db: Session = De
 
 
 @app.get("/api/auth/me")
-def me(user: UserDB = Depends(get_current_user)):
-    return {"email": user.email}
+def me(user: UserDB = Depends(get_session_user)):
+    return {
+        "email": user.email,
+        "privacy_accepted": has_privacy_consent(user),
+        "privacy_version": PRIVACY_VERSION,
+    }
+
+
+@app.post("/api/auth/accept-privacy")
+def accept_privacy(user: UserDB = Depends(get_session_user), db: Session = Depends(get_db)):
+    user.privacy_accepted_at = utc_now()
+    user.privacy_version = PRIVACY_VERSION
+    db.commit()
+    return {"ok": True}
+
+
+def rows_to_dicts(rows, exclude=()):
+    return [
+        {c.name: getattr(row, c.name) for c in row.__table__.columns if c.name not in exclude}
+        for row in rows
+    ]
+
+
+@app.get("/api/auth/export")
+def export_data(user: UserDB = Depends(get_session_user), db: Session = Depends(get_db)):
+    # Auskunft und Datenübertragbarkeit: alle eigenen Daten als JSON
+    return {
+        "konto": {
+            "email": user.email,
+            "erstellt_am": user.created_at,
+            "datenschutz_zustimmung_am": user.privacy_accepted_at,
+        },
+        "einstellungen": rows_to_dicts(
+            db.query(UserSettingsDB).filter(UserSettingsDB.user_id == user.id).all(), exclude=("user_id",)
+        ),
+        "lebensmittel": rows_to_dicts(
+            db.query(FoodDB).filter(FoodDB.user_id == user.id).all(), exclude=("user_id",)
+        ),
+        "eintraege": rows_to_dicts(
+            db.query(MealEntryDB).filter(MealEntryDB.user_id == user.id).all(), exclude=("user_id",)
+        ),
+    }
+
+
+@app.delete("/api/auth/account")
+def delete_account(
+    payload: DeleteAccountSchema,
+    user: UserDB = Depends(get_session_user),
+    db: Session = Depends(get_db),
+):
+    check_login_allowed(user.email)  # gleicher Schutz wie beim Login gegen Passwort-Raten
+    if not verify_password(payload.password, user.password_hash):
+        record_failed_login(user.email)
+        raise HTTPException(status_code=401, detail="Passwort falsch")
+
+    # Alle Daten ausdrücklich löschen, unabhängig davon, ob die Datenbank Fremdschlüssel erzwingt
+    db.query(MealEntryDB).filter(MealEntryDB.user_id == user.id).delete(synchronize_session=False)
+    db.query(FoodDB).filter(FoodDB.user_id == user.id).delete(synchronize_session=False)
+    db.query(UserSettingsDB).filter(UserSettingsDB.user_id == user.id).delete(synchronize_session=False)
+    db.query(SessionDB).filter(SessionDB.user_id == user.id).delete(synchronize_session=False)
+    db.delete(user)
+    db.commit()
+    clear_failed_logins(user.email)
+    return {"deleted": True}
 
 
 # --- Einstellungen ------------------------------------------------------------

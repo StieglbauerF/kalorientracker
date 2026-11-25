@@ -1,9 +1,9 @@
 """
-Migration auf Mehrbenutzer-Betrieb.
+Migration auf Mehrbenutzer-Betrieb und Datenschutz.
 
 Befehle (die Ziel-Datenbank kommt aus DATABASE_URL):
   python migrate.py --status                  nur anzeigen, nichts ändern
-  python migrate.py                           Tabellen, user_id-Spalten und ID-Vergabe reparieren
+  python migrate.py                           Tabellen, Spalten und ID-Vergabe reparieren
   python migrate.py --owner deine@mail.at     bisherige Daten diesem Konto zuordnen
 
 Vor jeder Änderung wird die Ziel-Datenbank angezeigt und eine Bestätigung verlangt.
@@ -17,6 +17,10 @@ import main  # noqa: F401  importiert Engine und Modelle, legt fehlende Tabellen
 from sqlalchemy import inspect, text
 
 TABLES_WITH_OWNER = ["user_settings", "foods", "meal_entries"]
+USER_COLUMNS = {
+    "privacy_accepted_at": "TIMESTAMP",
+    "privacy_version": "VARCHAR",
+}
 
 
 def print_target() -> None:
@@ -33,9 +37,18 @@ def confirm() -> None:
 
 def show_status() -> None:
     with main.engine.connect() as conn:
+        inspector = inspect(conn)
+        user_columns = {c["name"] for c in inspector.get_columns("users")}
         count = conn.execute(text("SELECT COUNT(*) FROM users")).scalar()
         print(f"users: {count} Konto/Konten")
-        inspector = inspect(conn)
+        if "privacy_accepted_at" in user_columns:
+            pending = conn.execute(
+                text("SELECT COUNT(*) FROM users WHERE privacy_accepted_at IS NULL")
+            ).scalar()
+            print(f"users: davon ohne Datenschutz-Zustimmung: {pending}")
+        else:
+            print("users: Spalten für Datenschutz fehlen (migrate.py ausführen)")
+
         for table in TABLES_WITH_OWNER:
             columns = {c["name"] for c in inspector.get_columns(table)}
             total = conn.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
@@ -51,6 +64,13 @@ def show_status() -> None:
 def add_missing_columns() -> None:
     with main.engine.begin() as conn:
         inspector = inspect(conn)
+
+        user_columns = {c["name"] for c in inspector.get_columns("users")}
+        for name, sql_type in USER_COLUMNS.items():
+            if name not in user_columns:
+                conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {sql_type}"))
+                print(f"+ Spalte users.{name} angelegt")
+
         for table in TABLES_WITH_OWNER:
             columns = {c["name"] for c in inspector.get_columns(table)}
             if "user_id" not in columns:
@@ -120,7 +140,7 @@ def assign_owner(email: str) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Migration auf Mehrbenutzer-Betrieb")
+    parser = argparse.ArgumentParser(description="Migration auf Mehrbenutzer-Betrieb und Datenschutz")
     parser.add_argument("--owner", help="E-Mail des Kontos, das die bisherigen Daten erhält")
     parser.add_argument("--status", action="store_true", help="Nur den Zustand anzeigen, nichts ändern")
     args = parser.parse_args()
