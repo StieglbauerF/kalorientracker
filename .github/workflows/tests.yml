@@ -27,5 +27,8 @@ jobs:
       - name: Abhängigkeiten installieren
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Abhängigkeiten auf bekannte Sicherheitslücken prüfen
+        run: python -m pip_audit -r requirements.txt
+
       - name: Tests ausführen
         run: python -m pytest -v
