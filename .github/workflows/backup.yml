@@ -8,28 +8,79 @@ on:
 jobs:
   backup:
     runs-on: ubuntu-latest
+    env:
+      # Muss zur Postgres-Version von Neon passen (Neon-Dashboard prüfen, Produktion läuft auf 18)
+      PG_BIN: /usr/lib/postgresql/18/bin
     steps:
-      - name: PostgreSQL-Client installieren
+      - name: PostgreSQL-Client 18 installieren
         run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
-          sudo apt-get install -y postgresql-client
+          sudo apt-get install -y postgresql-client-18
+          $PG_BIN/pg_dump --version
 
       - name: Datenbank sichern
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: pg_dump --no-owner --no-privileges --format=custom --file=backup.dump "$DATABASE_URL"
+        run: $PG_BIN/pg_dump --no-owner --no-privileges --format=custom --file=backup.dump "$DATABASE_URL"
 
-      - name: Backup verschlüsseln
+      - name: Backup verschlüsseln und speichern
         env:
           BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
         run: |
           echo "$BACKUP_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
             --symmetric --cipher-algo AES256 --output backup.dump.gpg backup.dump
-          rm backup.dump
 
-      - name: Verschlüsseltes Backup speichern
+      - name: Verschlüsseltes Backup als Artefakt hochladen
         uses: actions/upload-artifact@v4
         with:
           name: datenbank-backup-${{ github.run_id }}
           path: backup.dump.gpg
           retention-days: 30
+
+      - name: Wiederherstellung auf Test-Zweig prüfen
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          RESTORE_TEST_DATABASE_URL: ${{ secrets.RESTORE_TEST_DATABASE_URL }}
+        run: |
+          host_von() { echo "$1" | sed -E 's#.*@([^/?]+).*#\1#'; }
+          if [ -z "$RESTORE_TEST_DATABASE_URL" ]; then
+            echo "Abbruch: RESTORE_TEST_DATABASE_URL fehlt."
+            exit 1
+          fi
+          if [ "$(host_von "$RESTORE_TEST_DATABASE_URL")" = "$(host_von "$DATABASE_URL")" ]; then
+            echo "Abbruch: Test-Zweig und Produktion haben denselben Host. Wiederherstellung wird verweigert."
+            exit 1
+          fi
+
+          $PG_BIN/pg_restore --no-owner --no-privileges --clean --if-exists \
+            --dbname "$RESTORE_TEST_DATABASE_URL" backup.dump
+
+          abfrage() { $PG_BIN/psql "$1" -At -c "$2"; }
+          fehler=0
+          while IFS= read -r sql; do
+            prod_wert=$(abfrage "$DATABASE_URL" "$sql")
+            test_wert=$(abfrage "$RESTORE_TEST_DATABASE_URL" "$sql")
+            echo "$sql -> Produktion: $prod_wert | Test: $test_wert"
+            if [ "$prod_wert" != "$test_wert" ]; then
+              fehler=1
+            fi
+          done <<'ABFRAGEN'
+          SELECT count(*) FROM users
+          SELECT count(*) FROM meal_entries
+          SELECT count(*) FROM foods
+          SELECT count(*) FROM user_settings
+          SELECT version_num FROM alembic_version
+          ABFRAGEN
+
+          if [ "$fehler" -ne 0 ]; then
+            echo "Prüfung fehlgeschlagen: Die Zahlen unterscheiden sich." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Wiederherstellung geprüft: Zahlen stimmen überein." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Aufräumen
+        if: always()
+        run: rm -f backup.dump
