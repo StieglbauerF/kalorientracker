@@ -30,6 +30,8 @@ def fresh_database():
     main.Base.metadata.drop_all(bind=main.engine)
     main.Base.metadata.create_all(bind=main.engine)
     main._failed_logins.clear()
+    main.RATE_LOGIN_IP.reset()
+    main.RATE_REGISTER_IP.reset()
     yield
 
 
