@@ -1,0 +1,35 @@
+name: Datenbank-Backup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"   # jeden Sonntag 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PostgreSQL-Client installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Datenbank sichern
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: pg_dump --no-owner --no-privileges --format=custom --file=backup.dump "$DATABASE_URL"
+
+      - name: Backup verschlüsseln
+        env:
+          BACKUP_PASSPHRASE: ${{ secrets.BACKUP_PASSPHRASE }}
+        run: |
+          echo "$BACKUP_PASSPHRASE" | gpg --batch --yes --passphrase-fd 0 \
+            --symmetric --cipher-algo AES256 --output backup.dump.gpg backup.dump
+          rm backup.dump
+
+      - name: Verschlüsseltes Backup speichern
+        uses: actions/upload-artifact@v4
+        with:
+          name: datenbank-backup-${{ github.run_id }}
+          path: backup.dump.gpg
+          retention-days: 30
