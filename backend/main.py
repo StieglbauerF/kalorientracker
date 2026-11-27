@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import (
@@ -339,6 +339,43 @@ def clear_failed_logins(email: str) -> None:
         _failed_logins.pop(email, None)
 
 
+class RateLimiter:
+    # Zählt Anfragen je Schlüssel (z. B. IP-Adresse) im gleitenden Zeitfenster.
+    # Blockierte Versuche zählen nicht mit, daher entspannt sich die Sperre von selbst.
+    def __init__(self, limit: int, window_seconds: int):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def hit(self, key: str, message: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            hits = self._hits[key]
+            while hits and now - hits[0] > self.window_seconds:
+                hits.popleft()
+            if len(hits) >= self.limit:
+                raise HTTPException(status_code=429, detail=message)
+            hits.append(now)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+RATE_LOGIN_IP = RateLimiter(limit=30, window_seconds=15 * 60)
+RATE_REGISTER_IP = RateLimiter(limit=10, window_seconds=60 * 60)
+
+
+def client_ip(request: Request) -> str:
+    # Hinter dem Render-Proxy steht die echte Adresse ganz rechts in X-Forwarded-For.
+    # Den linken Teil kann der Client selbst setzen, deshalb wird er nicht verwendet.
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
+    return request.client.host if request.client else "unbekannt"
+
+
 def issue_session(db: Session, user: UserDB) -> dict:
     token = new_token()
     db.add(SessionDB(
@@ -456,7 +493,8 @@ def health_check():
 
 # --- Konten & Anmeldung -------------------------------------------------------
 @app.post("/api/auth/register", response_model=TokenResponse)
-def register(payload: RegisterSchema, db: Session = Depends(get_db)):
+def register(payload: RegisterSchema, request: Request, db: Session = Depends(get_db)):
+    RATE_REGISTER_IP.hit(client_ip(request), "Zu viele Registrierungen von dieser Verbindung. Bitte später erneut versuchen.")
     if not INVITE_CODE:
         raise HTTPException(status_code=403, detail="Registrierung ist deaktiviert")
     if not hmac.compare_digest(payload.invite_code.encode("utf-8"), INVITE_CODE.encode("utf-8")):
@@ -486,7 +524,8 @@ def register(payload: RegisterSchema, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)
-def login(payload: LoginSchema, db: Session = Depends(get_db)):
+def login(payload: LoginSchema, request: Request, db: Session = Depends(get_db)):
+    RATE_LOGIN_IP.hit(client_ip(request), "Zu viele Anmeldeversuche von dieser Verbindung. Bitte warte 15 Minuten.")
     email = payload.email.strip().lower()
     check_login_allowed(email)
 
