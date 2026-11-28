@@ -92,3 +92,18 @@ def test_historie_hat_alle_ansichten(client):
     assert modes["alles"]["kcal"] == 1260
     assert modes["ohne_alkohol"]["kcal"] == 260
     assert modes["nur_essen"]["kcal"] == 260
+
+
+def test_getraenke_haben_eigenen_bereich(client):
+    t = token_for(client)
+    client.post("/api/entries", headers=auth(t), json=entry(
+        name="Cola", category="soft_drink", meal_type="drinks", grams=500, kcal=42, p=0, c=10.6, f=0,
+    ))
+    tag = day(client, t)
+    assert len(tag["meals"]["drinks"]) == 1
+    assert len(tag["meals"]["snacks"]) == 0
+
+
+def test_unbekannte_mahlzeit_wird_abgelehnt(client):
+    t = token_for(client)
+    assert client.post("/api/entries", headers=auth(t), json=entry(meal_type="brunch")).status_code == 422
