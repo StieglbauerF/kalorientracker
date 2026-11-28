@@ -143,7 +143,7 @@ class MealEntryDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     entry_date = Column(Date, index=True, nullable=False)
-    meal_type = Column(String, nullable=False)  # breakfast, lunch, dinner, snacks
+    meal_type = Column(String, nullable=False)  # breakfast, lunch, dinner, snacks, drinks
     category = Column(String, nullable=False, default="food", server_default="food")
     pieces = Column(Float, nullable=True)
     name = Column(String, nullable=False)
@@ -216,7 +216,7 @@ class FoodCreate(BaseModel):
 
 class EntryCreate(BaseModel):
     entry_date: date = Field(default_factory=date.today)
-    meal_type: Literal["breakfast", "lunch", "dinner", "snacks"]
+    meal_type: Literal["breakfast", "lunch", "dinner", "snacks", "drinks"]
     name: str = Field(min_length=1, max_length=200)
     grams: float = Field(gt=0, le=5000)
     kcal: float = Field(ge=0, le=900)
@@ -691,7 +691,7 @@ def get_day(
     )
     settings = get_or_create_settings(db, user)
 
-    grouped_meals = {"breakfast": [], "lunch": [], "dinner": [], "snacks": []}
+    grouped_meals = {"breakfast": [], "lunch": [], "dinner": [], "snacks": [], "drinks": []}
     for e in entries:
         if e.meal_type in grouped_meals:
             grouped_meals[e.meal_type].append(e)

@@ -345,6 +345,7 @@
           <option value="lunch" selected>☀️ Mittagessen</option>
           <option value="dinner">🌙 Abendessen</option>
           <option value="snacks">⚡ Snacks</option>
+          <option value="drinks">☕ Getränke</option>
         </select>
       </div>
       <div id="quickTemplatesContainer" class="flex flex-wrap gap-2"></div>
@@ -514,6 +515,7 @@
           <option value="lunch">☀️ Mittagessen</option>
           <option value="dinner">🌙 Abendessen</option>
           <option value="snacks">⚡ Snacks & Post-Workout</option>
+          <option value="drinks">☕ Getränke</option>
         </select>
       </div>
 
@@ -802,7 +804,8 @@
       { key: 'breakfast', title: 'Frühstück', icon: 'sunrise' },
       { key: 'lunch', title: 'Mittagessen', icon: 'sun' },
       { key: 'dinner', title: 'Abendessen', icon: 'moon' },
-      { key: 'snacks', title: 'Snacks & Post-Workout', icon: 'zap' }
+      { key: 'snacks', title: 'Snacks & Post-Workout', icon: 'zap' },
+      { key: 'drinks', title: 'Getränke', icon: 'coffee' }
     ];
 
     function getLocalTodayStr() {
@@ -831,7 +834,7 @@
       calc: { gender: 'male', weight: 80, height: 180, age: 23, activity: 1.55, objective: 0, proteinFactor: 2.0 },
       targets: { kcal: 2500, p: 160, c: 280, f: 75, s: 6 },
       totals: { kcal: 0, p: 0, c: 0, f: 0, s: 0 },
-      meals: { breakfast: [], lunch: [], dinner: [], snacks: [] },
+      meals: { breakfast: [], lunch: [], dinner: [], snacks: [], drinks: [] },
       customFoods: []
     };
 
@@ -1015,7 +1018,7 @@
       if (!d) return;
       state.totals = d.totals || { kcal: 0, p: 0, c: 0, f: 0, s: 0 };
       if (d.targets) state.targets = d.targets;
-      state.meals = d.meals || { breakfast: [], lunch: [], dinner: [], snacks: [] };
+      state.meals = d.meals || { breakfast: [], lunch: [], dinner: [], snacks: [], drinks: [] };
     }
 
     // --- Anmeldung ---
@@ -1117,7 +1120,7 @@
       }
       authToken = '';
       localStorage.removeItem('makroTrack_token');
-      state.meals = { breakfast: [], lunch: [], dinner: [], snacks: [] };
+      state.meals = { breakfast: [], lunch: [], dinner: [], snacks: [], drinks: [] };
       state.totals = { kcal: 0, p: 0, c: 0, f: 0, s: 0 };
       state.customFoods = [];
       updateAllUI();
@@ -1194,7 +1197,7 @@
         }
         authToken = '';
         localStorage.removeItem('makroTrack_token');
-        state.meals = { breakfast: [], lunch: [], dinner: [], snacks: [] };
+        state.meals = { breakfast: [], lunch: [], dinner: [], snacks: [], drinks: [] };
         state.totals = { kcal: 0, p: 0, c: 0, f: 0, s: 0 };
         state.customFoods = [];
         updateAllUI();
@@ -1761,6 +1764,9 @@
     // --- Food Modal (Suche, Foto, Eigenes) ---
     function openFoodModal(mealKey, initialTab = 'search') {
       activeModalMealKey = mealKey;
+      if (mealKey === 'drinks' && !editingFoodId) {
+        document.getElementById('customCategory').value = 'soft_drink';
+      }
       document.getElementById('modalMealSelect').value = mealKey;
       document.getElementById('foodModal').classList.remove('hidden');
       switchModalTab(initialTab);
