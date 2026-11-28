@@ -133,6 +133,8 @@ class FoodDB(Base):
     f = Column(Float, nullable=False)         # pro 100g
     s = Column(Float, default=0.0)            # Salz pro 100g
     default_g = Column(Float, default=100.0)
+    category = Column(String, nullable=False, default="food", server_default="food")
+    piece_grams = Column(Float, nullable=True)
 
 
 class MealEntryDB(Base):
@@ -142,6 +144,8 @@ class MealEntryDB(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=True)
     entry_date = Column(Date, index=True, nullable=False)
     meal_type = Column(String, nullable=False)  # breakfast, lunch, dinner, snacks
+    category = Column(String, nullable=False, default="food", server_default="food")
+    pieces = Column(Float, nullable=True)
     name = Column(String, nullable=False)
     grams = Column(Float, nullable=False)
     kcal = Column(Float, nullable=False)        # pro 100g
@@ -206,6 +210,8 @@ class FoodCreate(BaseModel):
     f: float = Field(ge=0, le=100)
     s: float = Field(default=0.0, ge=0, le=100)
     default_g: float = Field(default=100.0, gt=0, le=5000)
+    category: Literal["food", "alcohol", "soft_drink"] = "food"
+    piece_grams: Optional[float] = Field(default=None, gt=0, le=5000)
 
 
 class EntryCreate(BaseModel):
@@ -218,6 +224,8 @@ class EntryCreate(BaseModel):
     c: float = Field(ge=0, le=100)
     f: float = Field(ge=0, le=100)
     s: float = Field(default=0.0, ge=0, le=100)
+    category: Literal["food", "alcohol", "soft_drink"] = "food"
+    pieces: Optional[float] = Field(default=None, gt=0, le=1000)
 
 
 class EntryUpdateGrams(BaseModel):
@@ -638,6 +646,37 @@ def update_settings(
 
 
 # --- Tage, Einträge, Historie -------------------------------------------------
+# Summen für die drei Ansichten. Getränke werden nur über ihre Kategorie ausgeschlossen.
+ANSICHTEN = {
+    "alles": lambda kategorie: True,
+    "ohne_alkohol": lambda kategorie: kategorie != "alcohol",
+    "nur_essen": lambda kategorie: kategorie == "food",
+}
+
+
+def berechne_summen(eintraege) -> dict:
+    ergebnis = {}
+    for name, passt in ANSICHTEN.items():
+        summe = {"kcal": 0.0, "p": 0.0, "c": 0.0, "f": 0.0, "s": 0.0}
+        for e in eintraege:
+            if not passt(e.category or "food"):
+                continue
+            faktor = e.grams / 100.0
+            summe["kcal"] += e.kcal * faktor
+            summe["p"] += e.p * faktor
+            summe["c"] += e.c * faktor
+            summe["f"] += e.f * faktor
+            summe["s"] += (e.s or 0.0) * faktor
+        ergebnis[name] = {
+            "kcal": round(summe["kcal"]),
+            "p": round(summe["p"], 1),
+            "c": round(summe["c"], 1),
+            "f": round(summe["f"], 1),
+            "s": round(summe["s"], 1),
+        }
+    return ergebnis
+
+
 @app.get("/api/days/{target_date}")
 def get_day(
     target_date: date,
@@ -653,27 +692,15 @@ def get_day(
     settings = get_or_create_settings(db, user)
 
     grouped_meals = {"breakfast": [], "lunch": [], "dinner": [], "snacks": []}
-    totals = {"kcal": 0.0, "p": 0.0, "c": 0.0, "f": 0.0, "s": 0.0}
-
     for e in entries:
         if e.meal_type in grouped_meals:
             grouped_meals[e.meal_type].append(e)
-        factor = e.grams / 100.0
-        totals["kcal"] += e.kcal * factor
-        totals["p"] += e.p * factor
-        totals["c"] += e.c * factor
-        totals["f"] += e.f * factor
-        totals["s"] += (e.s or 0.0) * factor
 
+    modes = berechne_summen(entries)
     return {
         "date": str(target_date),
-        "totals": {
-            "kcal": round(totals["kcal"]),
-            "p": round(totals["p"], 1),
-            "c": round(totals["c"], 1),
-            "f": round(totals["f"], 1),
-            "s": round(totals["s"], 1),
-        },
+        "totals": modes["alles"],  # bleibt für bestehende Aufrufer erhalten
+        "modes": modes,
         "targets": {
             "kcal": settings.target_kcal,
             "p": settings.target_p,
@@ -742,37 +769,45 @@ def get_history(
     user: UserDB = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Aggregiert automatisch alle getrackten Tage aus meal_entries."""
+    """Aggregiert alle getrackten Tage in allen drei Ansichten."""
     limit = max(1, min(limit, 365))
-    rows = (
-        db.query(
-            MealEntryDB.entry_date,
-            func.count(MealEntryDB.id).label("meals_count"),
-            func.sum(MealEntryDB.kcal * MealEntryDB.grams / 100.0).label("kcal"),
-            func.sum(MealEntryDB.p * MealEntryDB.grams / 100.0).label("p"),
-            func.sum(MealEntryDB.c * MealEntryDB.grams / 100.0).label("c"),
-            func.sum(MealEntryDB.f * MealEntryDB.grams / 100.0).label("f"),
-            func.sum(MealEntryDB.s * MealEntryDB.grams / 100.0).label("s"),
-        )
+    tage = [
+        zeile[0]
+        for zeile in db.query(MealEntryDB.entry_date)
         .filter(MealEntryDB.user_id == user.id)
-        .group_by(MealEntryDB.entry_date)
+        .distinct()
         .order_by(MealEntryDB.entry_date.desc())
         .limit(limit)
         .all()
-    )
-
-    return [
-        {
-            "date": str(r.entry_date),
-            "meals_count": r.meals_count,
-            "kcal": round(r.kcal or 0),
-            "p": round(r.p or 0, 1),
-            "c": round(r.c or 0, 1),
-            "f": round(r.f or 0, 1),
-            "s": round(r.s or 0, 1),
-        }
-        for r in rows
     ]
+    if not tage:
+        return []
+
+    eintraege = (
+        db.query(MealEntryDB)
+        .filter(MealEntryDB.user_id == user.id, MealEntryDB.entry_date.in_(tage))
+        .all()
+    )
+    nach_tag: dict = {}
+    for e in eintraege:
+        nach_tag.setdefault(e.entry_date, []).append(e)
+
+    ergebnis = []
+    for tag in tage:
+        liste = nach_tag.get(tag, [])
+        modes = berechne_summen(liste)
+        alles = modes["alles"]
+        ergebnis.append({
+            "date": str(tag),
+            "meals_count": len(liste),
+            "kcal": alles["kcal"],
+            "p": alles["p"],
+            "c": alles["c"],
+            "f": alles["f"],
+            "s": alles["s"],
+            "modes": modes,
+        })
+    return ergebnis
 
 
 # --- Lebensmittel-Datenbank ---------------------------------------------------
