@@ -224,6 +224,7 @@
       <div class="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex items-center justify-between gap-4 shadow-lg">
         <div class="space-y-3">
           <span id="dashboardDateLabel" class="text-xs font-semibold uppercase tracking-wider text-emerald-400">Tagesbilanz Heute</span>
+          <div id="viewModeToggle" class="flex gap-1"></div>
           <div>
             <div class="flex items-baseline gap-1.5">
               <span id="statEatenKcal" class="text-3xl sm:text-4xl font-extrabold text-white">0</span>
@@ -662,9 +663,28 @@
           <label class="block text-xs text-slate-400 mb-1">Name des Lebensmittels / Gerichts</label>
           <input type="text" id="customName" placeholder="z. B. Skyr Natur oder Chili mit Huhn" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
         </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Eingabe</label>
+            <select id="customMode" onchange="updateCustomFormMode()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="per100">Pro 100 g</option>
+              <option value="piece">Pro Stück</option>
+              <option value="portion">Einmalige Portion</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Kategorie</label>
+            <select id="customCategory" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="food">Essen</option>
+              <option value="alcohol">Alkoholisches Getränk</option>
+              <option value="soft_drink">Alkoholfreies Getränk</option>
+            </select>
+          </div>
+        </div>
+        <p id="customModeHint" class="text-[11px] text-slate-500"></p>
         <div class="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
           <div>
-            <label class="block text-[11px] text-emerald-400 mb-1">kcal (/100g)</label>
+            <label class="block text-[11px] text-emerald-400 mb-1">kcal</label>
             <input type="number" step="0.1" id="customKcal" placeholder="186" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
           <div>
@@ -684,19 +704,30 @@
             <input type="number" step="0.1" id="customS" placeholder="1.2" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500" />
           </div>
         </div>
-        <div class="grid grid-cols-2 gap-3 pt-1">
+        <div id="customPieceRow" class="hidden grid grid-cols-2 gap-3">
           <div>
-            <label class="block text-xs text-slate-400 mb-1">Portionsmenge jetzt (g)</label>
-            <input type="number" id="customGrams" value="100" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+            <label class="block text-xs text-slate-400 mb-1">Gewicht eines Stücks (g)</label>
+            <input type="number" id="customPieceGrams" placeholder="60" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
-          <div class="flex items-end">
-            <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pb-2.5">
-              <input type="checkbox" id="customSaveToDb" checked class="rounded bg-slate-800 border-slate-700 text-emerald-500 focus:ring-0" />
-              <span>Als Schnell-Vorlage speichern</span>
-            </label>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">Anzahl</label>
+            <input type="number" id="customQty" value="1" step="0.5" min="0.5" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
         </div>
+        <div id="customGramsRow" class="grid grid-cols-2 gap-3 pt-1">
+          <div>
+            <label id="customGramsLabel" class="block text-xs text-slate-400 mb-1">Menge jetzt (g)</label>
+            <input type="number" id="customGrams" value="100" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          </div>
+        </div>
+        <div id="customSaveRow" class="pt-1">
+          <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+            <input type="checkbox" id="customSaveToDb" checked class="rounded bg-slate-800 border-slate-700 text-emerald-500 focus:ring-0" />
+            <span>Als Schnell-Vorlage speichern</span>
+          </label>
+        </div>
         <div class="pt-2 space-y-2">
+          <button id="customSubmitBtn"        <div class="pt-2 space-y-2">
           <button id="customSubmitBtn" onclick="addCustomFoodToMeal()" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold text-white shadow-lg shadow-emerald-900/40 transition">
             Zur Mahlzeit hinzufügen
           </button>
@@ -1307,10 +1338,35 @@
       lucide.createIcons();
     }
 
-    function calculateTotalsFromLocalMeals() {
+    // Ansichten für Summen: alles, ohne Alkohol, nur Essen
+    let viewMode = 'alles';
+    let historyMode = 'alles';
+    let lastHistory = [];
+    const ANSICHT_NAMEN = { alles: 'Alles', ohne_alkohol: 'Ohne Alkohol', nur_essen: 'Nur Essen' };
+
+    function passtZuAnsicht(kategorie, ansicht) {
+      const k = kategorie || 'food';
+      if (ansicht === 'ohne_alkohol') return k !== 'alcohol';
+      if (ansicht === 'nur_essen') return k === 'food';
+      return true;
+    }
+
+    function ansichtsSchalterHtml(aktiv, funktion) {
+      return Object.keys(ANSICHT_NAMEN).map(a => `
+        <button onclick="${funktion}('${a}')" class="px-2 py-0.5 rounded-md text-[10px] font-semibold transition ${a === aktiv ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-white'}">${ANSICHT_NAMEN[a]}</button>
+      `).join('');
+    }
+
+    function setViewMode(mode) {
+      viewMode = mode;
+      updateDashboardStats();
+    }
+
+    function calculateTotalsFromLocalMeals(ansicht = 'alles') {
       let totalKcal = 0, totalP = 0, totalC = 0, totalF = 0, totalS = 0;
       Object.values(state.meals).forEach(list => {
         list.forEach(item => {
+          if (!passtZuAnsicht(item.category, ansicht)) return;
           const factor = (parseFloat(item.grams) || 0) / 100;
           totalKcal += item.kcal * factor;
           totalP += item.p * factor;
@@ -1329,7 +1385,8 @@
     }
 
     function updateDashboardStats() {
-      const eaten = calculateTotalsFromLocalMeals();
+      document.getElementById('viewModeToggle').innerHTML = ansichtsSchalterHtml(viewMode, 'setViewMode');
+      const eaten = calculateTotalsFromLocalMeals(viewMode);
       const t = state.targets;
 
       document.getElementById('statEatenKcal').textContent = eaten.kcal;
@@ -1432,7 +1489,7 @@
               <div class="bg-slate-800/60 border border-slate-700/70 rounded-xl p-3 space-y-2">
                 <div class="flex items-start justify-between gap-2">
                   <div>
-                    <h4 class="text-xs font-semibold text-white">${escapeHtml(item.name)}</h4>
+                    <h4 class="text-xs font-semibold text-white">${item.pieces ? `${item.pieces} × ` : ''}${escapeHtml(item.name)}${item.category === 'alcohol' ? ' <span class="text-[10px] text-amber-400 font-normal">· Alkohol</span>' : item.category === 'soft_drink' ? ' <span class="text-[10px] text-cyan-400 font-normal">· Getränk</span>' : ''}</h4>
                     <p class="text-[11px] text-slate-400">
                       <span class="text-emerald-400 font-semibold">${iKcal} kcal</span> · 
                       <span class="text-blue-400">${iP}g P</span> · 
@@ -1503,7 +1560,7 @@
     }
 
     // --- Mahlzeiten-Einträge ---
-    async function createMealEntryOnServer(mealKey, foodObj, grams) {
+    async function createMealEntryOnServer(mealKey, foodObj, grams, extra = {}) {
       const created = await apiFetch('/api/entries', {
         method: 'POST',
         body: JSON.stringify({
@@ -1515,7 +1572,9 @@
           p: foodObj.p,
           c: foodObj.c,
           f: foodObj.f,
-          s: foodObj.s || 0
+          s: foodObj.s || 0,
+          category: foodObj.category || 'food',
+          pieces: extra.pieces ?? null
         })
       });
       state.meals[mealKey].push(created);
@@ -1636,11 +1695,13 @@
     }
 
     function renderHistoryModalContent(history) {
+      lastHistory = history;
       document.getElementById('histTotalDays').textContent = history.length;
+      const werte = h => (h.modes ? h.modes[historyMode] : h);
 
       if (history.length > 0) {
-        const avgKcal = Math.round(history.reduce((acc, h) => acc + h.kcal, 0) / history.length);
-        const avgP = Math.round(history.reduce((acc, h) => acc + h.p, 0) / history.length);
+        const avgKcal = Math.round(history.reduce((acc, h) => acc + werte(h).kcal, 0) / history.length);
+        const avgP = Math.round(history.reduce((acc, h) => acc + werte(h).p, 0) / history.length);
         document.getElementById('histAvgKcal').textContent = avgKcal + ' kcal';
         document.getElementById('histAvgProtein').textContent = avgP + ' g';
       } else {
@@ -1658,7 +1719,9 @@
         return;
       }
 
-      container.innerHTML = history.map(h => {
+      const schalter = `<div class="flex gap-1 mb-2">${ansichtsSchalterHtml(historyMode, 'setHistoryMode')}</div>`;
+      container.innerHTML = schalter + history.map(h => {
+        const w = werte(h);
         const parts = h.date.split('-');
         const displayDate = `${parts[2]}.${parts[1]}.${parts[0]}`;
         return `
@@ -1669,11 +1732,11 @@
                 <span class="text-[10px] px-2 py-0.5 rounded bg-slate-900 text-emerald-400 font-medium">${h.meals_count} Einträge</span>
               </div>
               <div class="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
-                <span class="text-emerald-400 font-semibold">${h.kcal} kcal</span> · 
-                <span class="text-blue-400">${h.p}g P</span> · 
-                <span class="text-amber-400">${h.c}g C</span> · 
-                <span class="text-rose-400">${h.f}g F</span> · 
-                <span class="text-cyan-400">${(h.s || 0).toFixed(1)}g Salz</span>
+                <span class="text-emerald-400 font-semibold">${w.kcal} kcal</span> ·
+                <span class="text-blue-400">${w.p}g P</span> ·
+                <span class="text-amber-400">${w.c}g C</span> ·
+                <span class="text-rose-400">${w.f}g F</span> ·
+                <span class="text-cyan-400">${(w.s || 0).toFixed(1)}g Salz</span>
               </div>
             </div>
             <span class="text-xs text-slate-400 flex items-center gap-1">
@@ -1683,6 +1746,11 @@
           </div>
         `;
       }).join('');
+    }
+
+    function setHistoryMode(mode) {
+      historyMode = mode;
+      renderHistoryModalContent(lastHistory);
     }
 
     function openDayFromHistory(dateStr) {
@@ -1765,21 +1833,102 @@
       const food = state.customFoods.find(f => f.id === foodId);
       if (!food) return;
       closeFoodModal();
-      await createMealEntryOnServer(activeModalMealKey, food, food.default_g || 100);
+      const grams = food.default_g || 100;
+      const pieces = food.piece_grams ? grams / food.piece_grams : null;
+      await createMealEntryOnServer(activeModalMealKey, food, grams, { pieces });
+    }
+
+    function umrechnen(werte, faktor) {
+      return {
+        kcal: werte.kcal * faktor,
+        p: werte.p * faktor,
+        c: werte.c * faktor,
+        f: werte.f * faktor,
+        s: werte.s * faktor
+      };
+    }
+
+    function updateCustomFormMode() {
+      const modus = document.getElementById('customMode').value;
+      document.getElementById('customPieceRow').classList.toggle('hidden', modus !== 'piece');
+      document.getElementById('customGramsRow').classList.toggle('hidden', modus === 'piece');
+      document.getElementById('customSaveRow').classList.toggle('hidden', modus === 'portion');
+      document.getElementById('customGramsLabel').textContent =
+        modus === 'portion' ? 'Gewicht der Portion (g, optional)' : 'Menge jetzt (g)';
+      const hinweise = {
+        per100: 'Die Werte beziehen sich auf 100 g.',
+        piece: 'Die Werte beziehen sich auf ein Stück. Mit dem Stückgewicht rechne ich auf 100 g um.',
+        portion: 'Die Werte beziehen sich auf die ganze Portion. Ohne Gewicht rechne ich mit 100 g. Einmalige Portionen werden nicht gespeichert.'
+      };
+      document.getElementById('customModeHint').textContent = hinweise[modus];
+    }
+
+    function leseCustomFormular() {
+      const zahl = id => parseFloat(document.getElementById(id).value) || 0;
+      const modus = document.getElementById('customMode').value;
+      const roh = { kcal: zahl('customKcal'), p: zahl('customP'), c: zahl('customC'), f: zahl('customF'), s: zahl('customS') };
+      const name = document.getElementById('customName').value.trim() || 'Eigenes Gericht';
+      const kategorie = document.getElementById('customCategory').value;
+      const saveDb = modus !== 'portion' && document.getElementById('customSaveToDb').checked;
+
+      if (modus === 'piece') {
+        const stueckGramm = zahl('customPieceGrams');
+        const stueck = zahl('customQty') || 1;
+        if (!(stueckGramm > 0)) return { fehler: 'Bitte das Gewicht eines Stücks eingeben.' };
+        return {
+          name, kategorie, modus, saveDb,
+          pieceGrams: stueckGramm, pieces: stueck, grams: stueck * stueckGramm,
+          per100: umrechnen(roh, 100 / stueckGramm)
+        };
+      }
+      if (modus === 'portion') {
+        const gewicht = zahl('customGrams') || 100;
+        return {
+          name, kategorie, modus, saveDb,
+          pieceGrams: null, pieces: null, grams: gewicht,
+          per100: umrechnen(roh, 100 / gewicht)
+        };
+      }
+      const menge = zahl('customGrams') || 100;
+      return { name, kategorie, modus, saveDb, pieceGrams: null, pieces: null, grams: menge, per100: roh };
+    }
+
+    function foodPayloadAus(form) {
+      return {
+        name: form.name,
+        kcal: form.per100.kcal,
+        p: form.per100.p,
+        c: form.per100.c,
+        f: form.per100.f,
+        s: form.per100.s,
+        default_g: form.pieceGrams || form.grams,
+        category: form.kategorie,
+        piece_grams: form.pieceGrams
+      };
     }
 
     function startEditFood(id) {
       const f = state.customFoods.find(x => x.id === id);
       if (!f) return;
       editingFoodId = id;
+      const pieceGrams = f.piece_grams || 0;
+      const faktor = pieceGrams > 0 ? pieceGrams / 100 : 1;
+      const zeige = wert => Math.round((wert || 0) * faktor * 100) / 100;
+
+      document.getElementById('customMode').value = pieceGrams > 0 ? 'piece' : 'per100';
+      document.querySelector('#customMode option[value="portion"]').disabled = true;
       document.getElementById('customName').value = f.name;
-      document.getElementById('customKcal').value = f.kcal;
-      document.getElementById('customP').value = f.p;
-      document.getElementById('customC').value = f.c;
-      document.getElementById('customF').value = f.f;
-      document.getElementById('customS').value = f.s || 0;
+      document.getElementById('customKcal').value = zeige(f.kcal);
+      document.getElementById('customP').value = zeige(f.p);
+      document.getElementById('customC').value = zeige(f.c);
+      document.getElementById('customF').value = zeige(f.f);
+      document.getElementById('customS').value = zeige(f.s);
+      document.getElementById('customPieceGrams').value = pieceGrams || '';
+      document.getElementById('customQty').value = 1;
       document.getElementById('customGrams').value = f.default_g || 100;
+      document.getElementById('customCategory').value = f.category || 'food';
       document.getElementById('customSaveToDb').closest('label').classList.add('hidden');
+      updateCustomFormMode();
       document.getElementById('customSubmitBtn').textContent = 'Änderungen speichern';
       document.getElementById('customCancelEditBtn').classList.remove('hidden');
       switchModalTab('custom');
@@ -1787,13 +1936,18 @@
 
     function resetCustomForm() {
       editingFoodId = null;
-      ['customName', 'customKcal', 'customP', 'customC', 'customF', 'customS'].forEach(id => {
+      ['customName', 'customKcal', 'customP', 'customC', 'customF', 'customS', 'customPieceGrams'].forEach(id => {
         document.getElementById(id).value = '';
       });
+      document.getElementById('customQty').value = 1;
       document.getElementById('customGrams').value = 100;
+      document.getElementById('customMode').value = 'per100';
+      document.querySelector('#customMode option[value="portion"]').disabled = false;
+      document.getElementById('customCategory').value = 'food';
       document.getElementById('customSaveToDb').closest('label').classList.remove('hidden');
       document.getElementById('customSubmitBtn').textContent = 'Zur Mahlzeit hinzufügen';
       document.getElementById('customCancelEditBtn').classList.add('hidden');
+      updateCustomFormMode();
     }
 
     function cancelEditFood() {
@@ -1802,20 +1956,15 @@
     }
 
     async function saveEditedFood() {
-      const payload = {
-        name: document.getElementById('customName').value.trim() || 'Eigenes Gericht',
-        kcal: parseFloat(document.getElementById('customKcal').value) || 0,
-        p: parseFloat(document.getElementById('customP').value) || 0,
-        c: parseFloat(document.getElementById('customC').value) || 0,
-        f: parseFloat(document.getElementById('customF').value) || 0,
-        s: parseFloat(document.getElementById('customS').value) || 0,
-        default_g: parseFloat(document.getElementById('customGrams').value) || 100
-      };
-
+      const form = leseCustomFormular();
+      if (form.fehler) {
+        alert(form.fehler);
+        return;
+      }
       try {
         const updated = await apiFetch(`/api/foods/${editingFoodId}`, {
           method: 'PUT',
-          body: JSON.stringify(payload)
+          body: JSON.stringify(foodPayloadAus(form))
         });
         const idx = state.customFoods.findIndex(x => x.id === editingFoodId);
         if (idx >= 0) state.customFoods[idx] = updated;
@@ -1834,20 +1983,14 @@
         await saveEditedFood();
         return;
       }
-
-      const name = document.getElementById('customName').value.trim() || 'Eigenes Gericht';
-      const kcal = parseFloat(document.getElementById('customKcal').value) || 0;
-      const p = parseFloat(document.getElementById('customP').value) || 0;
-      const c = parseFloat(document.getElementById('customC').value) || 0;
-      const f = parseFloat(document.getElementById('customF').value) || 0;
-      const s = parseFloat(document.getElementById('customS').value) || 0;
-      const grams = parseFloat(document.getElementById('customGrams').value) || 100;
-      const saveDb = document.getElementById('customSaveToDb').checked;
-
-      const foodPayload = { name, kcal, p, c, f, s, default_g: grams };
-
+      const form = leseCustomFormular();
+      if (form.fehler) {
+        alert(form.fehler);
+        return;
+      }
+      const foodPayload = foodPayloadAus(form);
       try {
-        if (saveDb) {
+        if (form.saveDb) {
           const savedFood = await apiFetch('/api/foods', {
             method: 'POST',
             body: JSON.stringify(foodPayload)
@@ -1856,7 +1999,7 @@
         }
         resetCustomForm();
         closeFoodModal();
-        await createMealEntryOnServer(activeModalMealKey, foodPayload, grams);
+        await createMealEntryOnServer(activeModalMealKey, foodPayload, form.grams, { pieces: form.pieces });
       } catch (e) {
         alert('Fehler beim Speichern des Eintrags.');
       }
